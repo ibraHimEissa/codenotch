@@ -11,6 +11,8 @@ struct ApprovalRequest: Identifiable, Equatable, Codable {
     let command: String
     let description: String
     let created: Date
+    /// Which chat is asking, for when several are running at once.
+    var session: String? = nil
 }
 
 private enum ApprovalFiles {
@@ -53,7 +55,8 @@ enum ApprovalHook {
             ?? ""
         let request = ApprovalRequest(id: UUID().uuidString, provider: provider, pid: getpid(), toolName: toolName,
                                       command: command, description: toolInput["description"] as? String ?? "",
-                                      created: Date())
+                                      created: Date(),
+                                      session: sessionName(id: object["session_id"] as? String, cwd: object["cwd"] as? String))
         guard let data = try? JSONEncoder().encode(request),
               (try? data.write(to: ApprovalFiles.request(request.id), options: .atomic)) != nil else { return }
         defer {
@@ -71,6 +74,25 @@ enum ApprovalHook {
             }
             usleep(200_000)
         }
+    }
+
+    /// Claude's registry knows a chat's own title; otherwise the folder it's working in says enough.
+    private static func sessionName(id: String?, cwd: String?) -> String? {
+        let manager = FileManager.default
+        let home = manager.homeDirectoryForCurrentUser
+        let names = (try? manager.contentsOfDirectory(atPath: home.path)) ?? []
+        if let id {
+            for folder in names where folder == ".claude" || folder.hasPrefix(".claude-") {
+                let directory = home.appendingPathComponent(folder).appendingPathComponent("sessions")
+                for file in (try? manager.contentsOfDirectory(atPath: directory.path)) ?? [] where file.hasSuffix(".json") {
+                    guard let data = try? Data(contentsOf: directory.appendingPathComponent(file)),
+                          let entry = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                          entry["sessionId"] as? String == id else { continue }
+                    if let name = entry["name"] as? String, !name.isEmpty { return name }
+                }
+            }
+        }
+        return cwd.map { ($0 as NSString).lastPathComponent }
     }
 
     private static func respond(_ answer: String) {

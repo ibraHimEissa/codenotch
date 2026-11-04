@@ -19,6 +19,7 @@ final class SessionPillFeed: ObservableObject {
         let name: String
         let glyph: ProviderGlyph
         let since: Date
+        var step: String? = nil
     }
 
     struct Pill: Equatable {
@@ -56,7 +57,11 @@ final class SessionPillFeed: ObservableObject {
     private var watched: (provider: String, session: String)?
     private var watchedFile: URL?
     private var pollTimer: Timer?
-    private var appPrompt: String?
+    /// Every running chat's latest step and any prompt it's holding for in the app's own window.
+    private var stepByCell: [String: String] = [:]
+    private var promptByCell: [String: String] = [:]
+    private var fileByCell: [String: URL] = [:]
+    private var neonKey: String?
     private let queue = DispatchQueue(label: "codenotch.session-activity", qos: .utility)
 
     private let defaults = UserDefaults.standard
@@ -177,26 +182,29 @@ final class SessionPillFeed: ObservableObject {
         waiting.sort { ($0.session.since, $0.session.id) < ($1.session.since, $1.session.id) }
         let rows = (waiting + working).map {
             Row(id: $0.session.id, name: $0.session.name, glyph: $0.glyph,
-                since: busySince[$0.session.id] ?? $0.session.since)
+                since: busySince[$0.session.id] ?? $0.session.since,
+                step: stepByCell[$0.session.id])
         }
+        allRunning = (waiting + working).map { ($0.provider, $0.session.id) }
 
         let requests = ApprovalCenter.shared.requests
         if let request = requests.first {
             let tool = request.provider == "claude" ? "Claude" : "Codex"
             let meaning = request.toolName == "Bash" || request.toolName.contains("shell") || request.toolName.contains("exec")
                 ? CommandMeaning.describe(request.command).title : request.toolName
-            setPill(Pill(state: .approval, title: L10n.t("\(tool) needs your OK"),
+            setPill(Pill(state: .approval, title: request.session.map { "\(tool) · \($0)" } ?? L10n.t("\(tool) needs your OK"),
                          detail: request.description.isEmpty ? meaning : request.description,
                          glyph: request.provider == "claude" ? .claude : .openai,
                          since: request.created, processID: nil, others: [],
                          request: request, queued: requests.count - 1),
                     watching: watched)
-        } else if let prompt = appPrompt, let entry = working.first {
+        } else if let entry = working.first(where: { promptByCell[$0.session.id] != nil }),
+                  let prompt = promptByCell[entry.session.id] {
             // Only the app can answer this one, so the popup's job is to fetch you.
             setPill(Pill(state: .waiting, title: entry.session.name,
                          detail: "\(prompt) · Click to open", glyph: entry.glyph,
                          since: entry.session.since, processID: entry.session.processID,
-                         others: Array(rows.dropFirst())),
+                         others: rows.filter { $0.id != entry.session.id }),
                     watching: (entry.provider, entry.session.id))
         } else if let entry = waiting.first {
             setPill(Pill(state: .waiting, title: entry.session.name,
@@ -225,7 +233,6 @@ final class SessionPillFeed: ObservableObject {
             watched = watching
             watchedFile = nil
             lines = []
-            appPrompt = nil
         }
         if watching == nil {
             pollTimer?.invalidate()
@@ -239,30 +246,75 @@ final class SessionPillFeed: ObservableObject {
         if next != pill {
             withAnimation(NotchMotion.contents) { pill = next }
         }
+        updateNeon(for: next)
     }
 
+    private var allRunning: [(provider: String, session: String)] = []
+
+    /// Reads every running chat, so one waiting in the background isn't missed.
     private func poll() {
-        guard let watched else { return }
-        let known = watchedFile
+        let targets = allRunning
+        let main = watched
+        let knownFiles = fileByCell
         queue.async { [weak self] in
-            let file = known ?? SessionActivityReader.transcript(provider: watched.provider, sessionID: watched.session)
-            let lines = file.map(SessionActivityReader.read) ?? []
-            let prompt = file.flatMap(SessionActivityReader.pendingPrompt)
-            DispatchQueue.main.async {
-                guard let self, self.watched?.session == watched.session else { return }
-                self.watchedFile = file
-                if prompt != self.appPrompt {
-                    self.appPrompt = prompt
-                    if prompt != nil, UserDefaults.standard.object(forKey: "sessionEndSound") as? Bool ?? true {
-                        _ = SessionChime.play(UserDefaults.standard.string(forKey: "sessionBlockedSoundName")
-                                              ?? SessionChime.defaultFinished)
-                    }
-                    self.rebuild()
+            var files: [String: URL] = [:]
+            var steps: [String: String] = [:]
+            var prompts: [String: String] = [:]
+            var mainLines: [ActivityLine]?
+            var everyone = targets
+            if let main, !everyone.contains(where: { $0.session == main.session }) { everyone.append(main) }
+            for target in everyone {
+                guard let file = knownFiles[target.session]
+                    ?? SessionActivityReader.transcript(provider: target.provider, sessionID: target.session) else { continue }
+                files[target.session] = file
+                let lines = SessionActivityReader.read(file)
+                if target.session == main?.session { mainLines = lines }
+                if let step = lines.last(where: { $0.kind == .step }) {
+                    steps[target.session] = step.detail.isEmpty ? step.title : "\(step.title) \(step.detail)"
                 }
-                if lines != self.lines {
-                    withAnimation(.easeOut(duration: 0.2)) { self.lines = lines }
-                }
+                prompts[target.session] = SessionActivityReader.pendingPrompt(file)
             }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.fileByCell = files
+                self.stepByCell = steps
+                if self.watched?.session == main?.session {
+                    self.watchedFile = main.flatMap { files[$0.session] }
+                    let lines = mainLines ?? []
+                    if lines != self.lines {
+                        withAnimation(.easeOut(duration: 0.2)) { self.lines = lines }
+                    }
+                }
+                let isNew = prompts.contains { self.promptByCell[$0.key] != $0.value }
+                let changed = prompts != self.promptByCell
+                self.promptByCell = prompts
+                if isNew, UserDefaults.standard.object(forKey: "sessionEndSound") as? Bool ?? true {
+                    _ = SessionChime.play(UserDefaults.standard.string(forKey: "sessionBlockedSoundName")
+                                          ?? SessionChime.defaultFinished)
+                }
+                if changed || self.pill?.others.map(\.step) != nil { self.rebuild() }
+            }
+        }
+    }
+
+    /// Lights the frame once for each thing that newly needs you, and calls it off once answered.
+    private func updateNeon(for next: Pill?) {
+        let key: String?
+        var tone = NeonFrame.Tone.waiting
+        switch next?.state {
+        case .approval, .waiting: key = "wait:\(next?.title ?? ""):\(next?.request?.id ?? "")"
+        case .done:
+            key = "done:\(next?.title ?? ""):\(next?.since.timeIntervalSince1970 ?? 0)"
+            tone = next?.glyph == .openai ? .codex : .claude
+        default: key = nil
+        }
+        guard key != neonKey else { return }
+        let wasWaiting = neonKey?.hasPrefix("wait:") == true
+        neonKey = key
+        if key != nil {
+            NeonFrame.shared.show(tone)
+        } else if wasWaiting {
+            NeonFrame.shared.dismiss()
         }
     }
 
@@ -515,6 +567,16 @@ struct SessionPillView: View {
                 .truncationMode(.middle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if !feed.isHovered, !pill.others.isEmpty {
+                Text("+\(pill.others.count)")
+                    .font(Typography.cardBody)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Palette.textPrimary)
+                    .padding(.horizontal, 6)
+                    .frame(height: 16)
+                    .background(Capsule().fill(Palette.barTrack))
+                    .help(L10n.t("Other chats running"))
+            }
             if feed.isHovered, pill.state == .working || pill.state == .done {
                 Button { feed.setFocus(minutes: 60) } label: {
                     Image(systemName: "moon.fill")
@@ -588,6 +650,14 @@ struct SessionPillView: View {
                 .font(Typography.cardBody)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(1)
+                .layoutPriority(1)
+            if let step = row.step {
+                Text(step)
+                    .font(Typography.cardBody)
+                    .foregroundStyle(secondaryInk)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer(minLength: 4)
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(Self.clock(context.date.timeIntervalSince(row.since)))
@@ -610,6 +680,7 @@ struct SessionPillSettings: View {
     @AppStorage(ApprovalCenter.enabledKey) private var approvals = true
     @AppStorage(SessionPillFeed.Key.computerAlerts) private var computerAlerts = true
     @State private var focusChoice = 0
+    @AppStorage(NeonFrame.enabledKey) private var neonFrame = true
     @ObservedObject private var approvalCenter = ApprovalCenter.shared
 
     var body: some View {
@@ -617,6 +688,16 @@ struct SessionPillSettings: View {
             Toggle(L10n.t("Show what Claude and Codex are working on"), isOn: $enabled)
             Toggle(L10n.t("Include Codex"), isOn: $includesCodex)
                 .disabled(!enabled)
+            HStack {
+                Toggle(L10n.t("Glow around the screen"), isOn: $neonFrame)
+                Spacer()
+                Button(L10n.t("Preview")) { NeonFrame.shared.show(.claude) }
+                    .disabled(!neonFrame)
+            }
+            Text(L10n.t("Warm for Claude and teal for Codex when a turn ends, yellow when one is waiting on you. It fades after 2 seconds if you're at the Mac; otherwise it breathes until you move the mouse or press a key."))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle(L10n.t("Answer permission requests from the popup"), isOn: $approvals)
                 .disabled(!enabled)
                 .onChange(of: approvals) { _, on in ApprovalHookInstaller.sync(enabled: on) }
