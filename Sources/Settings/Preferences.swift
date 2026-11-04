@@ -1064,7 +1064,7 @@ final class Preferences: ObservableObject {
         self.hideDepletedAccounts = defaults.bool(forKey: Keys.hideDepletedAccounts)
 
         self.weeklyRing = defaults.string(forKey: Keys.weeklyRing)
-            .flatMap(WeeklyRing.init(rawValue:)) ?? .off
+            .flatMap(WeeklyRing.init(rawValue:)) ?? .inside
         // On unless turned off: it is how the notch is carried to another edge,
         // and a control that is missing by default is one nobody finds.
         self.accentColor = defaults.string(forKey: Keys.accentColor)

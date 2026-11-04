@@ -1236,6 +1236,7 @@ final class NotchWindowController {
         let geometry = evaluation ?? cursorGeometry
         var rects = [geometry.liveRect(gripRevealed: gripRevealed)]
         if let card = geometry.updateCardRect { rects.append(card) }
+        if let pill = geometry.sessionPillRect { rects.append(pill) }
         if model.isExpanded, let event = model.activeResetAlert, let card = geometry.resetCardRect(event: event) {
             rects.append(card)
         }

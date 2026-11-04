@@ -86,7 +86,7 @@ final class ClaudeTokenRefresher: ObservableObject {
         cooldown: TimeInterval = 10 * 60,
         timeout: TimeInterval = 30,
         interval: TimeInterval = 60,
-        launcher: @escaping Launcher = ClaudeTokenRefresher.run
+        launcher: @escaping Launcher = { cli, timeout in try ClaudeTokenRefresher.run(cli, timeout: timeout) }
     ) {
         self.expiry = expiry
         self.reload = reload
@@ -132,10 +132,10 @@ final class ClaudeTokenRefresher: ObservableObject {
         // Plenty of time left. Also the case where launching would do nothing,
         // because the command's own gate has not opened either.
         guard expiry.timeIntervalSince(now) < margin else { return false }
-        // Already spent an attempt on this exact token. This is the whole
-        // no-retry-loop guarantee: a launch that failed to move the expiry
-        // leaves the same value here next tick, and never runs again.
-        guard expiry != attemptedFor else { return false }
+        // A failed attempt on this exact token waits half an hour before another. A
+        // locked keychain refuses the write, so one try can't be the last: the token
+        // would stay dead, and the ring on its old number, until the app restarts.
+        if expiry == attemptedFor, let lastAttempt, now.timeIntervalSince(lastAttempt) < 30 * 60 { return false }
         if let lastAttempt, now.timeIntervalSince(lastAttempt) < cooldown { return false }
         return true
     }
@@ -215,7 +215,7 @@ final class ClaudeTokenRefresher: ObservableObject {
     /// volumes to the user as Codenotch asking for access.
     static let arguments = ["-p", "--no-session-persistence", "--strict-mcp-config"]
 
-    static func run(_ cli: URL, timeout: TimeInterval) throws
+    static func run(_ cli: URL, timeout: TimeInterval, configDirectory: URL? = nil) throws
         -> (pid: Int32, exit: () async -> Int32?) {
         let process = Process()
         process.executableURL = cli
@@ -225,6 +225,8 @@ final class ClaudeTokenRefresher: ObservableObject {
             process.currentDirectoryURL = scratch
             var environment = ProcessInfo.processInfo.environment
             environment["PWD"] = scratch.path
+            // Renews whichever account lives in this folder; none means the default.
+            if let configDirectory { environment["CLAUDE_CONFIG_DIR"] = configDirectory.path }
             process.environment = environment
         }
         process.standardInput = FileHandle.nullDevice

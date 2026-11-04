@@ -1,3 +1,27 @@
+> **This is an unofficial fork of [Codenotch](https://github.com/vinzdg/codenotch) by [Vinz](https://github.com/vinzdg).**
+> The notch, its design and animation, the usage tracking and almost everything else are their work, under the [MIT license](LICENSE). Please star and support the [original project](https://github.com/vinzdg/codenotch). Issues with this fork's additions belong here, not there.
+
+## What this fork adds
+
+- **This Mac:** one ring with tabs for network speed and per-app traffic (live, today, week, month), CPU, RAM, GPU and battery. Apps can be quit from their row.
+- **Accounts grouped by tool:** several Claude or Codex sign-ins share one ring, with a tab for each, your own names, and a switch to hide any of them.
+- **Tokens stay fresh on every account:** extra Claude accounts renew too, so their rings don't sit on an old reading.
+- **Session popup:** what Claude and Codex are doing in plain words, a summary when a turn ends, and an alert when one is waiting on you.
+- **Approvals from the popup:** Allow, Deny or Always for permission requests, through each tool's official `PermissionRequest` hook. Nothing is approved without a click, and a switch in Settings removes the hook. Dialogs the Claude app draws itself can only be alerted about, not answered.
+- **Unusual-use alerts** and a quiet mode.
+
+It builds with the Command Line Tools alone, no Xcode needed:
+
+```sh
+Scripts/build-local.sh --install
+```
+
+Builds are ad-hoc signed and don't update themselves, so this fork never overwrites itself with upstream. macOS 15 or later.
+
+---
+
+The original README follows.
+
 <div align="center">
 
 ![Codenotch](docs/design/codenotch-banner.png)

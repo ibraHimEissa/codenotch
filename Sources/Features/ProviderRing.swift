@@ -71,7 +71,8 @@ struct ProviderRing: View {
     private var displayFraction: Double? {
         usedFraction.map { Percent.metered($0, showingRemaining: showsRemaining) }
     }
-    private var sweep: CGFloat { CGFloat(min(max(displayFraction ?? 0, 0), 1)) }
+    /// A spent limit fills the ring, whichever window ran out.
+    private var sweep: CGFloat { showsShutRings ? 1 : CGFloat(min(max(displayFraction ?? 0, 0), 1)) }
     private var localSweep: CGFloat { Self.localSweep(for: localContextFraction) }
     /// The floor is a drawing decision only — the number under the ring and in
     /// the card stays true.
@@ -92,7 +93,7 @@ struct ProviderRing: View {
     /// beside a healthy week shuts like the reverse: right now nothing on
     /// either arc is usable, however green one of them reads alone.
     var showsShutRings: Bool {
-        shutRingsWhenSpent && (weeklyExhausted || (usedFraction ?? 0) >= 1)
+        shutRingsWhenSpent && (weeklyExhausted || (usedFraction ?? 0) >= 1 || (weeklyFraction ?? 0) >= 1)
     }
 
     /// The shutdown colour: dark grey where the meters read what is left —
@@ -210,7 +211,7 @@ struct ProviderRing: View {
                 // the case this exists for, and painting them the same colour
                 // would hide it. Held slightly back in opacity so the headline
                 // stays the one the eye lands on first.
-                if let radius = weeklyRing.radius, weeklyFraction != nil, !isWorking {
+                if let radius = weeklyRing.radius, weeklyFraction != nil {
                     let inset = NotchLayout.ringDiameter / 2 - radius
 
                     // A track of its own, for the same reason the headline has
@@ -391,7 +392,9 @@ struct ProviderCell: View {
                 usedFraction: snapshot.localModel == nil && snapshot.hasReading ? snapshot.ringFraction : nil,
                 glyph: snapshot.glyph,
                 customIconFilename: snapshot.customIconFilename,
-                showsRemaining: showsRemaining,
+                // The arc always fills as a limit is used, and turns red when it's gone;
+                // only the figure under it counts down what is left.
+                showsRemaining: false,
                 isStale: snapshot.status.isStale || !snapshot.hasReading,
                 isBlocked: snapshot.block != nil,
                 weeklyExhausted: isWeeklyExhausted,
@@ -573,6 +576,8 @@ struct ProviderReading: View {
 
     /// A dash, not "0%": nothing read is not the same as nothing used.
     var text: String {
+        if let label = snapshot.system?.ringLabel { return label }
+        if let countdown = snapshot.spentCountdown(now: Date()) { return countdown }
         guard snapshot.hasReading else { return "—" }
         guard let weekly = weeklyReading else { return snapshot.headlineText(showingRemaining: showsRemaining) }
         // The second number flips with the first: in remaining mode both ends
@@ -594,6 +599,11 @@ struct ProviderReading: View {
 
     /// Secondary while dimmed or while a local speed is still unmeasured.
     private var foreground: Color {
+        if snapshot.spentCountdown(now: Date()) != nil { return Palette.critical }
+        return readingForeground
+    }
+
+    private var readingForeground: Color {
         isDimmed || (snapshot.showsLocalPerformance && snapshot.localPerformance == nil)
             ? Palette.textSecondary : Palette.textPrimary
     }
@@ -651,6 +661,7 @@ struct ProviderReading: View {
             .frame(width: snapshot.localModel == nil ? nil : NotchLayout.ringDiameter,
                    height: NotchLayout.percentLineHeight)
             .contentTransition(.numericText())
-            .animation(NotchMotion.reading, value: text)
+            // System cells change every couple of seconds, so theirs rolls over quickly.
+            .animation(snapshot.system == nil ? NotchMotion.reading : .snappy(duration: 0.3), value: text)
     }
 }

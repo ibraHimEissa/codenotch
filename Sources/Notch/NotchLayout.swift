@@ -440,6 +440,7 @@ enum NotchLayout {
                            hasResetCredits: Bool = false,
                            localModelName: String? = nil, showsLocalPerformance: Bool = false,
                            localLedgerRows: Int = 0,
+                           extraHeight: CGFloat = 0,
                            compactRowCount: Int = 0,
                            showsDeepSeekPricing: Bool = true,
                            costRows: Int = 0) -> CGFloat {
@@ -529,6 +530,7 @@ enum NotchLayout {
                 height += blockSpacing + cardBodyLineHeight
             }
         }
+        height += extraHeight
         return height
     }
 

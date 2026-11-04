@@ -753,7 +753,7 @@ struct ProviderLimitsContent: View {
         VStack(alignment: .leading, spacing: 0) {
             TooltipHeader(title: snapshot.kind == .localRuntime
                           ? L10n.t("\(snapshot.localModel?.brand?.displayName ?? snapshot.displayName) · Local")
-                          : L10n.t("\(snapshot.displayName) Usage"),
+                          : snapshot.system != nil ? snapshot.displayName : L10n.t("\(snapshot.displayName) Usage"),
                           // A runtime with nothing loaded has no window to
                           // draw, so its own summary — "2 models loaded",
                           // "Server reachable · No models loaded" — stands in
@@ -765,6 +765,10 @@ struct ProviderLimitsContent: View {
                           accessory: headerAccessory) {
                 ProviderGlyphView(glyph: snapshot.glyph, customIconFilename: snapshot.customIconFilename)
                     .foregroundStyle(Palette.textPrimary)
+            }
+
+            if let group = snapshot.accountGroup, let tabs = snapshot.accountTabs {
+                AccountTabsView(group: group, tabs: tabs, selected: snapshot.id)
             }
 
             if let block = snapshot.block {
@@ -1300,6 +1304,9 @@ struct ProviderDetailContent: View {
                                   resetTimeFormat: resetTimeFormat, showUsagePace: showUsagePace,
                                   showsRemaining: showsRemaining,
                                   headerAccessory: headerAccessory)
+            if let system = snapshot.system {
+                SystemDetailView(detail: system)
+            }
             if showsExtendedDetail {
                 if let resetCredits = snapshot.availableResetCredits(at: now) {
                     UsageResetCreditsSection(credits: resetCredits, now: now)
@@ -1314,7 +1321,7 @@ struct ProviderDetailContent: View {
                                         schedule: deepSeekPricingSchedule,
                                         showsPricing: deepSeekPricingEnabled)
                 }
-                if let activity, snapshot.localModel == nil {
+                if let activity, snapshot.localModel == nil, !snapshot.hidesHistory {
                     SessionList(summary: activity, now: now, cap: sessionCap,
                                 onFocus: onFocusSession)
                 }
@@ -1376,7 +1383,7 @@ struct TooltipCard: View {
             moneyResetCount: snapshot.windows.filter { $0.money != nil && $0.resetsAt != nil }.count,
             moneyProjectionCount: snapshot.windows.filter { $0.money != nil && $0.usageProjection(now: now) != nil }.count,
             usageDetailGroupCount: snapshot.usageDetail?.visibleGroups.count ?? 0,
-            sessionCount: snapshot.localModel == nil ? (activity?.sessions.count ?? 0) : 0,
+            sessionCount: snapshot.localModel == nil && !snapshot.hidesHistory ? (activity?.sessions.count ?? 0) : 0,
             sessionCap: sessionCap,
             statusMessage: snapshot.statusMessage,
             blockMessage: snapshot.block?.summary(now: now),
@@ -1386,6 +1393,7 @@ struct TooltipCard: View {
             localModelName: snapshot.localModel?.name,
             showsLocalPerformance: snapshot.showsLocalPerformance,
                 localLedgerRows: snapshot.localLedgerRowCount,
+            extraHeight: snapshot.extraCardHeight,
             compactRowCount: snapshot.compactRowCount,
             showsDeepSeekPricing: deepSeekPricingEnabled,
             costRows: costRows

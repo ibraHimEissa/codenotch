@@ -15,6 +15,7 @@ struct CostSection: View {
     /// How many lines the card must reserve — read by the height math, so it
     /// has to agree with what `body` draws.
     @MainActor static func rowCount(for snapshot: ProviderSnapshot) -> Int {
+        guard !snapshot.hidesHistory else { return 0 }
         guard let m = CostModels.model(for: snapshot.id), m.state == .ready else { return 0 }
         return min(m.rows.count, maxRows)
     }

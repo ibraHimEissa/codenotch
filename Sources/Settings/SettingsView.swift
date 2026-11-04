@@ -761,6 +761,8 @@ struct SettingsView: View {
 
     private var accountsPane: some View {
         Form {
+            AccountGroupsSettings()
+
             // Split in two, because ordering only means anything for the
             // first group: a provider switched off has no ring in the notch,
             // so dragging it was arranging something that is not on screen.
@@ -1333,6 +1335,8 @@ struct SettingsView: View {
 
     private var notificationsPane: some View {
         Form {
+            SessionPillSettings()
+
             // First, because it changes what every switch below does. One
             // choice for all of them: the reasons for a banner (a second
             // display, a hidden notch) or for the notch (nothing in

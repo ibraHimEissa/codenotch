@@ -84,6 +84,8 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// updater is lazy so that `self` exists before it is handed over as the
     /// delegate.
     func start() {
+        // This fork ships without an update feed, so it never replaces itself with upstream.
+        guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
         guard !started else { return }
         started = true
         sparkle.automaticallyDownloadsUpdates = false
@@ -127,6 +129,7 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// download and install played out — for a version that is not there.
     /// Nothing is fetched and nothing installed.
     func preview() {
+        guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
         previewRun &+= 1
         previewing = true
         answer = nil
@@ -218,6 +221,7 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// This one *does* show UI — it was asked for, so silence would read as a
     /// broken button.
     func checkNow() {
+        guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
         start()
         outcome = .checking
         sparkle.checkForUpdates()

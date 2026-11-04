@@ -130,7 +130,7 @@ final class CursorGeometry {
             moneyResetCount: snapshot.windows.filter { $0.money != nil && $0.resetsAt != nil }.count,
             moneyProjectionCount: snapshot.windows.filter { $0.money != nil && $0.usageProjection(now: model.now) != nil }.count,
             usageDetailGroupCount: snapshot.usageDetail?.visibleGroups.count ?? 0,
-            sessionCount: snapshot.localModel == nil ? (model.activity(for: snapshot.id)?.sessions.count ?? 0) : 0,
+            sessionCount: snapshot.localModel == nil && !snapshot.hidesHistory ? (model.activity(for: snapshot.id)?.sessions.count ?? 0) : 0,
             sessionCap: sessionCap,
             statusMessage: snapshot.statusMessage,
             blockMessage: snapshot.block?.summary(now: model.now),
@@ -140,6 +140,7 @@ final class CursorGeometry {
             localModelName: snapshot.localModel?.name,
             showsLocalPerformance: snapshot.showsLocalPerformance,
             localLedgerRows: snapshot.localLedgerRowCount,
+            extraHeight: snapshot.extraCardHeight,
             compactRowCount: snapshot.compactRowCount,
             showsDeepSeekPricing: model.deepSeekPricingEnabled
         )
@@ -147,7 +148,10 @@ final class CursorGeometry {
         // pointer has to cross. Along it, the card's own extent.
         let cardAcross = model.edge.isVertical ? NotchLayout.cardWidth : cardHeight
         let cardAlong = model.edge.isVertical ? cardHeight : NotchLayout.cardWidth
-        let centre = model.cardAlong(centredOn: ringAlong(index: index), length: cardAlong)
+        let ring = ringAlong(index: index)
+        let hasTabs = model.edge.isVertical && snapshot.accountTabs != nil
+        let centre = model.cardAlong(centredOn: hasTabs ? AccountTabsView.centre(ring: ring, cardLength: cardAlong) : ring,
+                                     length: cardAlong)
         let rect = placement.rect(
             along: centre - cardAlong / 2,
             // The card's own extent does not scale, and it begins where the
@@ -158,6 +162,19 @@ final class CursorGeometry {
         )
         tooltipRects[index] = rect
         return rect
+    }
+
+    /// Where the session popup takes the mouse, and nowhere else around it.
+    var sessionPillRect: CGRect? {
+        let feed = SessionPillFeed.shared
+        guard model.showsSessionPill, feed.pill != nil else { return nil }
+        let length = feed.length(on: model.edge)
+        return placement.rect(
+            along: cellWing.lead + cellWing.length / 2 - length / 2,
+            across: model.sessionPillInset,
+            length: length,
+            depth: feed.depth(on: model.edge)
+        )
     }
 
     func resetCardRect(event: UsageResetEvent) -> CGRect? {

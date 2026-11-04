@@ -24,10 +24,33 @@ final class NotchViewModel: ObservableObject {
 
     func updateSnapshots(_ providerSnapshots: [ProviderSnapshot]) {
         let hoveredID = hoveredSnapshot?.id
-        let next = ProviderOrder.cells(from: providerSnapshots, keeping: snapshots).map(decorated).map(Costs.decorate)
+        observeSystemCells()
+        rawProviderCells = ProviderOrder.cells(from: providerSnapshots, keeping: snapshots).map(decorated).map(Costs.decorate)
+        providerCells = AccountGroups.shared.grouped(rawProviderCells)
+        let next = systemCells + providerCells
         let nextHoveredIndex = hoveredID.flatMap { id in next.firstIndex { $0.id == id } }
         if hoveredIndex != nextHoveredIndex { hoveredIndex = nextHoveredIndex }
         snapshots = next
+    }
+
+    private func observeSystemCells() {
+        guard systemSink == nil else { return }
+        systemSink = SystemFeed.shared.$cells.sink { [weak self] cells in
+            guard let self else { return }
+            let hoveredID = self.hoveredSnapshot?.id
+            self.systemCells = cells
+            let next = cells + self.providerCells
+            let nextHoveredIndex = hoveredID.flatMap { id in next.firstIndex { $0.id == id } }
+            if self.hoveredIndex != nextHoveredIndex { self.hoveredIndex = nextHoveredIndex }
+            self.snapshots = next
+        }
+        // The hovered index stands: the cell keeps its place while its contents change.
+        accountSink = AccountGroups.shared.$revision.dropFirst().sink { [weak self] _ in
+            guard let self else { return }
+            self.providerCells = AccountGroups.shared.grouped(self.rawProviderCells)
+            self.snapshots = self.systemCells + self.providerCells
+            if let index = self.hoveredIndex, index >= self.snapshots.count { self.hoveredIndex = nil }
+        }
     }
 
     func updatePerformances(_ measurements: [String: LocalModelPerformance],
@@ -92,7 +115,9 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// Whether the notch is open or folded away to its pill.
-    @Published var isExpanded = false
+    @Published var isExpanded = false {
+        didSet { SystemFeed.shared.setVisible(isExpanded) }
+    }
     /// Clicked open, so it stays open until clicked shut again. A gesture,
     /// not a setting: it lasts as long as this session of looking at it.
     @Published var isPinned = false
@@ -322,7 +347,9 @@ final class NotchViewModel: ObservableObject {
     }
 
     func tooltipAlong(index: Int, length: CGFloat) -> CGFloat {
-        cardAlong(centredOn: ringAlong(index: index, in: cellWing), length: length)
+        let ring = ringAlong(index: index, in: cellWing)
+        let hasTabs = edge.isVertical && snapshots.indices.contains(index) && snapshots[index].accountTabs != nil
+        return cardAlong(centredOn: hasTabs ? AccountTabsView.centre(ring: ring, cardLength: length) : ring, length: length)
     }
 
     /// The notch's middle, along the panel — what the update card hangs from.
@@ -338,6 +365,11 @@ final class NotchViewModel: ObservableObject {
     }
 
     private var cancellables = Set<AnyCancellable>()
+    private var systemSink: AnyCancellable?
+    private var systemCells: [ProviderSnapshot] = []
+    private var providerCells: [ProviderSnapshot] = []
+    private var rawProviderCells: [ProviderSnapshot] = []
+    private var accountSink: AnyCancellable?
 
     init() {
         // Language change leaves snapshots untouched; tick `now` so copy
@@ -1201,6 +1233,16 @@ final class NotchViewModel: ObservableObject {
     /// Where the notch ends is where the tooltip begins, and the tooltip is not
     /// drawn at that size, so this is the seam between the two spaces rather
     /// than a measurement either of them owns.
+    /// The popup gives way to anything already open beside the notch.
+    var showsSessionPill: Bool {
+        !(isExpanded && (hoveredIndex != nil || activeResetAlert != nil)) && updatePrompt == nil
+    }
+
+    /// Where the popup starts, measured from the screen edge: clear of the notch as drawn.
+    var sessionPillInset: CGFloat {
+        (isExpanded ? notchDrawnDepth : Design.px(26)) + edgeGap + 10
+    }
+
     var notchDrawnDepth: CGFloat {
         NotchLayout.bodyDepth(for: edge) * sizeScale
     }
@@ -1357,7 +1399,7 @@ final class NotchViewModel: ObservableObject {
                 moneyResetCount: snapshot.windows.filter { $0.money != nil && $0.resetsAt != nil }.count,
                 moneyProjectionCount: snapshot.windows.filter { $0.money != nil && $0.usageProjection(now: now) != nil }.count,
                 usageDetailGroupCount: snapshot.usageDetail?.visibleGroups.count ?? 0,
-                sessionCount: snapshot.localModel == nil ? sessionCap + 1 : 0,
+                sessionCount: snapshot.localModel == nil && !snapshot.hidesHistory ? sessionCap + 1 : 0,
                 sessionCap: sessionCap,
                 statusMessage: snapshot.statusMessage,
                 blockMessage: snapshot.block?.summary(now: now),
@@ -1367,6 +1409,7 @@ final class NotchViewModel: ObservableObject {
                 localModelName: snapshot.localModel?.name,
                 showsLocalPerformance: snapshot.showsLocalPerformance,
                 localLedgerRows: snapshot.localLedgerRowCount,
+                extraHeight: snapshot.extraCardHeight,
                 compactRowCount: snapshot.compactRowCount,
                 showsDeepSeekPricing: deepSeekPricingEnabled,
                 costRows: costRows(for: snapshot))

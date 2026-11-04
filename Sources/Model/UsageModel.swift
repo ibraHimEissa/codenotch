@@ -405,6 +405,35 @@ struct ProviderSnapshot: Identifiable, Equatable {
     /// breakdown and daily token/cost series.
     var usageDetail: ProviderUsageDetail? = nil
 
+    /// Set on the CPU, memory, GPU and network cells, which read this Mac rather than a provider.
+    var system: SystemDetail? = nil
+
+    /// Set when this cell stands for several sign-ins to one tool; see `AccountGroups`.
+    var accountGroup: String? = nil
+    var accountTabs: [AccountTab]? = nil
+    var hidesHistory = false
+
+    /// Stays put when another account's tab is chosen, so the ring isn't redrawn as a new cell.
+    var cellID: String { accountGroup ?? id }
+
+    /// How long until a spent limit comes back, for the figure under the ring. When both
+    /// windows are spent it's the later one, since nothing is usable before then.
+    func spentCountdown(now: Date) -> String? {
+        guard let resetsAt = windows
+            .filter({ ($0.usedFraction ?? 0) >= 1 })
+            .compactMap(\.resetsAt)
+            .filter({ $0 > now })
+            .max() else { return nil }
+        let minutes = Int(resetsAt.timeIntervalSince(now) / 60) + 1
+        if minutes >= 1_440 { return "\(minutes / 1_440)d \((minutes % 1_440) / 60)h" }
+        if minutes >= 60 { return "\(minutes / 60)h \(minutes % 60)m" }
+        return "\(minutes)m"
+    }
+
+    var extraCardHeight: CGFloat {
+        (system?.height ?? 0) + (accountTabs == nil ? 0 : AccountTabsView.height)
+    }
+
     /// Locally sampled cumulative token usage for a custom endpoint.
     var customUsageHistory: [CustomEndpointUsageDay]? = nil
 
@@ -539,7 +568,7 @@ struct ProviderSnapshot: Identifiable, Equatable {
 
     /// An empty local inventory still confirms server connectivity; an absent
     /// reading must not be shown as measured zero usage.
-    var hasReading: Bool { localRuntime != nil || localModel != nil || !windows.isEmpty }
+    var hasReading: Bool { system != nil || localRuntime != nil || localModel != nil || !windows.isEmpty }
 
     /// Group headings occupy space in both the card and its hover region.
     var windowGroupCount: Int { Set(windows.compactMap(\.group)).count }
@@ -552,7 +581,10 @@ struct ProviderSnapshot: Identifiable, Equatable {
 
     /// A ring can only be drawn when the provider said what the limit was. A
     /// local model has no limit; its arc is how full the context was.
-    var ringFraction: Double? { kind == .localRuntime ? localContextFraction : usedFraction }
+    var ringFraction: Double? {
+        if let system { return system.ringFraction }
+        return kind == .localRuntime ? localContextFraction : usedFraction
+    }
 
     /// Rows the tooltip adds for a logged runtime: context used, tokens and
     /// requests today, reasoning share, draft acceptance. Counted here so the

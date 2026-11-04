@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NotchRootView: View {
     @ObservedObject var model: NotchViewModel
+    @ObservedObject private var sessionPill = SessionPillFeed.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.codenotchReduceTransparency) private var reduceTransparency
     @Environment(\.codenotchHeadlessGlass) private var headlessGlass
@@ -124,6 +125,16 @@ struct NotchRootView: View {
                         .position(orbCentre(place))
                 }
 
+                if model.showsSessionPill, sessionPill.pill != nil {
+                    SessionPillView(feed: sessionPill)
+                        .position(place.point(along: model.notchMiddleAlong,
+                                              across: model.sessionPillInset + sessionPill.depth(on: model.edge) / 2))
+                        .transition(.opacity.combined(with: .offset(
+                            x: model.edge.outward.x * Design.px(36),
+                            y: model.edge.outward.y * Design.px(36)
+                        )))
+                }
+
                 if let prompt = model.updatePrompt, model.isExpanded {
                     // An update offered, or installing — ahead of anything
                     // else the notch would show here, until it is answered.
@@ -196,6 +207,8 @@ struct NotchRootView: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .animation(motion(NotchMotion.unfold), value: model.isExpanded)
+        .animation(motion(NotchMotion.contents), value: sessionPill.pill?.state)
+        .animation(motion(NotchMotion.contents), value: sessionPill.pill == nil)
         .tint(model.accentColor.color)
         .environment(\.codenotchAccentColor, model.accentColor.color)
         // The drawn style, not the chosen one: on the top edge the dock style
@@ -515,7 +528,7 @@ struct NotchRootView: View {
 
     @ViewBuilder
     private var cells: some View {
-        let stack = ForEach(Array(model.snapshots.enumerated()), id: \.element.id) { index, snapshot in
+        let stack = ForEach(Array(model.snapshots.enumerated()), id: \.element.cellID) { index, snapshot in
             ProviderCell(
                 snapshot: snapshot,
                 activity: model.activity(for: snapshot),
@@ -545,6 +558,16 @@ struct NotchRootView: View {
                 // edge that is the ring alone — the label sits below it, in the
                 // notch's depth, and claims nothing here.
                 .frame(width: model.edge.isVertical ? nil : NotchLayout.cellAlong(for: model.edge))
+                // The rule between the Mac's own cells and the AI accounts.
+                .overlay(alignment: .top) {
+                    if model.edge.isVertical, snapshot.system == nil,
+                       index > 0, model.snapshots[index - 1].system != nil {
+                        Capsule()
+                            .fill(Palette.ringTrack)
+                            .frame(width: Design.px(78), height: 1)
+                            .offset(y: -model.cellSpacing / 2)
+                    }
+                }
                 .opacity(model.isExpanded ? 1 : 0)
                 // A short slide toward the edge, no scaling: the clip is
                 // already doing the concealing, and scaling on top of it
@@ -672,7 +695,7 @@ struct NotchRootView: View {
             moneyResetCount: snapshot.windows.filter { $0.money != nil && $0.resetsAt != nil }.count,
             moneyProjectionCount: snapshot.windows.filter { $0.money != nil && $0.usageProjection(now: model.now) != nil }.count,
             usageDetailGroupCount: snapshot.usageDetail?.visibleGroups.count ?? 0,
-            sessionCount: snapshot.localModel == nil ? (model.activity(for: snapshot.id)?.sessions.count ?? 0) : 0,
+            sessionCount: snapshot.localModel == nil && !snapshot.hidesHistory ? (model.activity(for: snapshot.id)?.sessions.count ?? 0) : 0,
             sessionCap: model.sessionCap,
             statusMessage: snapshot.statusMessage,
             blockMessage: snapshot.block?.summary(now: model.now),
@@ -682,6 +705,7 @@ struct NotchRootView: View {
             localModelName: snapshot.localModel?.name,
             showsLocalPerformance: snapshot.showsLocalPerformance,
             localLedgerRows: snapshot.localLedgerRowCount,
+            extraHeight: snapshot.extraCardHeight,
             compactRowCount: snapshot.compactRowCount,
             showsDeepSeekPricing: model.deepSeekPricingEnabled,
             costRows: model.costRows(for: snapshot))

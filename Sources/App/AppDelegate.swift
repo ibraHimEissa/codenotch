@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     /// Keeps the Claude keychain token from ageing out on a Mac where the CLI
     /// is never run by hand. See `ClaudeTokenRefresher`.
-    private var tokenRefresher: ClaudeTokenRefresher?
+    private var tokenRefreshers: [ClaudeTokenRefresher] = []
     private var cancellables = Set<AnyCancellable>()
     /// Turns the monitors' running commentary into the one event worth
     /// interrupting for: an agent that has just stopped working.
@@ -96,6 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var miniMaxWeb: WebSessionProvider?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SystemFeed.shared.start()
+        SessionPillFeed.shared.startApprovals()
         // Set here, not in the Info.plist: this call is applied at launch and
         // overrides `LSUIElement` either way. Removing the plist key alone left
         // the app registered as a UIElement with no Dock tile, which looked
@@ -184,13 +186,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let remoteProviders: [UsageProvider] = preferences.remoteHosts
                 .filter { $0.isEnabled && $0.isConfigured }
                 .map { $0.makeProvider() }
-            let allProviders: [UsageProvider] = claudeProviders
-                + [CursorLocalProvider()]
-                + codexProfiles.map { CodexLocalProvider(profile: $0) }
-                + antigravityProfiles.map { AntigravityProvider(profile: $0) }
-                + [GLMProvider(), MiniMaxProvider(web: miniMaxWeb), GrokLocalProvider(), GrokBotProvider(), DevinLocalProvider(), OpenCodeProvider()]
-                + commandCodeProfiles.map { CommandCodeProvider(profile: $0) }
-                + [GitHubCopilotProvider(), KimiProvider(), KiroProvider(), AmpProvider(),
+            // Grouped so the Command Line Tools compiler can type-check it in time.
+            let cursorProviders: [UsageProvider] = [CursorLocalProvider()]
+            let codexProviders: [UsageProvider] = codexProfiles.map { CodexLocalProvider(profile: $0) }
+            let antigravityProviders: [UsageProvider] = antigravityProfiles.map { AntigravityProvider(profile: $0) }
+            let chinaAndAgentProviders: [UsageProvider] = [GLMProvider(), MiniMaxProvider(web: miniMaxWeb), GrokLocalProvider(), GrokBotProvider(), DevinLocalProvider(), OpenCodeProvider()]
+            let commandCodeProviders: [UsageProvider] = commandCodeProfiles.map { CommandCodeProvider(profile: $0) }
+            let otherProviders: [UsageProvider] = [GitHubCopilotProvider(), KimiProvider(), KiroProvider(), AmpProvider(),
                    ApifyProvider(), KiloProvider(), HiggsfieldProvider(),
                    MuseLocalProvider(),
                    OllamaLocalProvider(endpoint: URL(string: preferences.ollamaEndpoint)!),
@@ -203,9 +205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    GeminiAPIProvider(budget: {
                        Preferences.storedGeminiAPIMonthlyTokenBudget()
                    })]
-                + webProviders
-                + customProviders
-                + remoteProviders
+            let providerGroups: [[UsageProvider]] = [
+                claudeProviders, cursorProviders, codexProviders, antigravityProviders,
+                chinaAndAgentProviders, commandCodeProviders, otherProviders,
+                webProviders, customProviders, remoteProviders,
+            ]
+            let allProviders: [UsageProvider] = providerGroups.flatMap { $0 }
             preferences.reconcile(discoveredIDs: allProviders.map(\.id))
             let store = UsageStore(
                 providers: allProviders,
@@ -1072,37 +1077,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // step over that pid, so it never reaches the notch and never counts as
         // work in progress.
         //
-        // Only the default profile is renewed. The command writes whichever
-        // directory `CLAUDE_CONFIG_DIR` names, so a second profile would need
-        // that passed through — behaviour nobody has been able to try on a Mac
-        // with two of them, and an unverified guess is worse here than a ring
-        // that ages the way it already does.
-        if let defaultProvider = claudeProviders.first(where: { $0.profile.slug == nil }) {
+        // Every account is renewed, each through its own folder. Left alone an extra
+        // account's token dies after eight hours and its ring sits on an old number.
+        let refreshers: [ClaudeTokenRefresher] = claudeProviders.map { provider in
+            let directory = provider.profile.slug == nil ? nil : provider.profile.configDirectory
             let refresher = ClaudeTokenRefresher(
-                expiry: { await defaultProvider.tokenExpiry },
-                reload: { await defaultProvider.reloadTokenExpiry() }
-            )
-            for monitor in claudeMonitors {
-                monitor.ignoredPIDs = { [weak refresher] in
-                    var pids = ClaudeUsageCLI.runningPIDs
-                    if let pid = refresher?.launchedPID { pids.insert(pid) }
-                    return pids
+                expiry: { await provider.tokenExpiry },
+                reload: { await provider.reloadTokenExpiry() },
+                launcher: { cli, timeout in
+                    try ClaudeTokenRefresher.run(cli, timeout: timeout, configDirectory: directory)
                 }
-            }
+            )
             // The one place the failure becomes visible. The store carries the
-            // fact; nothing here retries, and the warning clears itself the
-            // moment a reading comes back.
+            // fact, and the warning clears itself the moment a reading comes back.
             refresher.$outcome
                 .receive(on: RunLoop.main)
                 .sink { [weak self] outcome in
                     guard case .failed = outcome else { return }
-                    self?.store?.reportRenewalFailed(providerID: defaultProvider.id)
+                    self?.store?.reportRenewalFailed(providerID: provider.id)
                 }
                 .store(in: &cancellables)
-
             refresher.start()
-            tokenRefresher = refresher
+            return refresher
         }
+        for monitor in claudeMonitors {
+            monitor.ignoredPIDs = {
+                var pids = ClaudeUsageCLI.runningPIDs
+                for refresher in refreshers {
+                    if let pid = refresher.launchedPID { pids.insert(pid) }
+                }
+                return pids
+            }
+        }
+        tokenRefreshers = refreshers
         let activity = ActivityCoordinator(monitors: monitors) { [weak self, weak fleet] id, sessions in
             guard let fleet else { return }
             fleet.setSessions(providerID: id, sessions: sessions)
@@ -1256,14 +1263,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func announceCompletions(sessions: [String: [AgentSession]]) {
         let events = completions.absorb(sessions)
+        let pill = SessionPillFeed.shared.absorb(sessions: sessions, events: events)
         guard let event = events.first, let preferences, let fleet = notchFleet else { return }
         Log.usage.info("session \(event.session.name, privacy: .public) \(String(describing: event.reason), privacy: .public)")
 
+        // Claude and Codex answer through the session popup, which leaves out quick turns.
+        if pill == .silent { return }
         if preferences.sessionEndSound {
             SessionChime.play(event.reason == .blocked
                               ? preferences.sessionBlockedSoundName
                               : preferences.sessionEndSoundName)
         }
+        if pill == .chime { return }
         guard preferences.announceSessionEnd else { return }
         if preferences.notificationChannel == .mac {
             ChannelNotifications.sessionEnded(name: event.session.name, blocked: event.reason == .blocked)
@@ -1469,7 +1480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ollamaRelay?.configure(enabled: false, endpoint: OllamaEndpoint.defaultAddress)
         lmstudioMetrics?.stop()
         omlxMetrics?.stop()
-        tokenRefresher?.stop()
+        tokenRefreshers.forEach { $0.stop() }
         piResponseMonitor?.stop()
         store?.stop()
         openCodeActivityBridge?.stop()
