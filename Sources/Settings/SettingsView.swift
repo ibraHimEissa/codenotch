@@ -10,7 +10,7 @@ import Combine
 extension View {
     @ViewBuilder
     func glassBackground(in shape: some Shape) -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), NotchSurfaceStyle.glassAvailable {
             background { Color.clear.glassEffect(.regular, in: shape) }
         } else {
             background {

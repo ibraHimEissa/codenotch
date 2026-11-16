@@ -22,8 +22,16 @@ enum NotchSurfaceStyle: String, CaseIterable, Identifiable {
     /// exist. A material is not a stand-in: the notch panel sits over the bezel
     /// with nothing behind it to blur, so a `.regular` material there would
     /// come out as a flat grey rectangle rather than as translucency.
+    ///
+    /// Built with the Command Line Tools (macOS 15 SDK) `glassEffect` is only the
+    /// no-op in GlassShim.swift, so on macOS 26 a glass style would paint nothing
+    /// and leave the surface see-through. Such a build always draws `solid`.
     static var glassAvailable: Bool {
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *) { return true } else { return false }
+        #else
+        return false
+        #endif
     }
 
     /// The style that actually gets painted, which is the chosen one only where

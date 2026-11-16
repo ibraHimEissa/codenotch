@@ -7,9 +7,18 @@ import SwiftUI
 /// and a light alert when a turn finishes or stops to ask for something.
 @MainActor
 final class SessionPillFeed: ObservableObject {
-    static let shared = SessionPillFeed()
+    /// One popup per tool, so Claude and Codex running together each show their own work.
+    enum Lane { case claude, codex }
 
-    enum State: Equatable { case working, done, waiting, approval, notice }
+    static let shared = SessionPillFeed(lane: .claude)
+    static let codex = SessionPillFeed(lane: .codex)
+    static let all = [shared, codex]
+
+    let lane: Lane
+
+    private init(lane: Lane) { self.lane = lane }
+
+    enum State: Equatable { case working, done, waiting, approval, notice, quiet }
 
     /// What the app delegate should do about a completion it was about to announce.
     enum Decision { case notCovered, chime, silent }
@@ -72,17 +81,31 @@ final class SessionPillFeed: ObservableObject {
     private var holdSeconds: Double { defaults.object(forKey: Key.holdSeconds) as? Double ?? 6 }
 
     func startApprovals() {
-        ApprovalCenter.shared.onChange = { [weak self] in self?.rebuild() }
+        ApprovalCenter.shared.onChange = { Self.all.forEach { $0.rebuild() } }
         ApprovalCenter.shared.start()
     }
 
     /// Quiet time: only what's actually waiting on you still gets through.
     var isFocused: Bool { defaults.double(forKey: Key.focusUntil) > Date().timeIntervalSince1970 }
 
+    private var focusTimer: Timer?
+
     func setFocus(minutes: Int) {
+        guard self === Self.shared else { return Self.shared.setFocus(minutes: minutes) }
         defaults.set(minutes > 0 ? Date().addingTimeInterval(Double(minutes) * 60).timeIntervalSince1970 : 0,
                      forKey: Key.focusUntil)
-        rebuild()
+        focusTimer?.invalidate()
+        // Keeps the minutes left current, and lets the popup come back by itself when it ends.
+        if minutes > 0 {
+            focusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self else { return timer.invalidate() }
+                    if !self.isFocused { timer.invalidate() }
+                    Self.all.forEach { $0.rebuild() }
+                }
+            }
+        }
+        Self.all.forEach { $0.rebuild() }
     }
 
     /// Something worth a glance about this Mac; it leaves on its own.
@@ -100,9 +123,10 @@ final class SessionPillFeed: ObservableObject {
     }
 
     private func glyph(forProvider id: String) -> ProviderGlyph? {
-        if ClaudeProfile.isClaude(providerID: id) { return .claude }
-        if includesCodex, id == "codex" || id.hasPrefix("codex-") { return .openai }
-        return nil
+        switch lane {
+        case .claude: return ClaudeProfile.isClaude(providerID: id) ? .claude : nil
+        case .codex: return includesCodex && (id == "codex" || id.hasPrefix("codex-")) ? .openai : nil
+        }
     }
 
     /// Fed on every publication of the sessions, like the completion watcher beside it.
@@ -119,7 +143,7 @@ final class SessionPillFeed: ObservableObject {
         busySince = stillBusy
 
         var decision = Decision.notCovered
-        if isEnabled, let event = events.first, let glyph = glyph(forProvider: event.providerID) {
+        if isEnabled, let event = events.first(where: { glyph(forProvider: $0.providerID) != nil }), let glyph = glyph(forProvider: event.providerID) {
             if event.reason == .blocked {
                 decision = .chime
             } else {
@@ -136,6 +160,27 @@ final class SessionPillFeed: ObservableObject {
         }
         rebuild()
         return decision
+    }
+
+    /// Every lane hears every reading; the loudest answer wins.
+    static func absorbAll(sessions: [String: [AgentSession]], events: [SessionCompletionWatcher.Event]) -> Decision {
+        let decisions = all.map { $0.absorb(sessions: sessions, events: events) }
+        if decisions.contains(where: { if case .chime = $0 { return true }; return false }) { return .chime }
+        if decisions.contains(where: { if case .silent = $0 { return true }; return false }) { return .silent }
+        return .notCovered
+    }
+
+    /// The popups showing now, stacked along the edge around the notch's middle.
+    static func stack(on edge: NotchEdge, middle: CGFloat) -> [(feed: SessionPillFeed, centre: CGFloat)] {
+        let visible = all.filter { $0.pill != nil }
+        let gap: CGFloat = 8
+        let total = visible.reduce(0) { $0 + $1.length(on: edge) } + gap * CGFloat(max(0, visible.count - 1))
+        var cursor = middle - total / 2
+        return visible.map { feed in
+            let length = feed.length(on: edge)
+            defer { cursor += length + gap }
+            return (feed, cursor + length / 2)
+        }
     }
 
     private func showFinished(_ session: AgentSession, glyph: ProviderGlyph, provider: String, started: Date) {
@@ -187,7 +232,7 @@ final class SessionPillFeed: ObservableObject {
         }
         allRunning = (waiting + working).map { ($0.provider, $0.session.id) }
 
-        let requests = ApprovalCenter.shared.requests
+        let requests = ApprovalCenter.shared.requests.filter { ($0.provider == "claude") == (lane == .claude) }
         if let request = requests.first {
             let tool = request.provider == "claude" ? "Claude" : "Codex"
             let meaning = request.toolName == "Bash" || request.toolName.contains("shell") || request.toolName.contains("exec")
@@ -216,6 +261,13 @@ final class SessionPillFeed: ObservableObject {
             setPill(finished, watching: watched)
         } else if let notice {
             setPill(notice, watching: watched)
+        } else if isFocused, let entry = working.first {
+            // Stays as a small reminder that quiet time is on, so it can be ended from here.
+            let left = Int(max(0, defaults.double(forKey: Key.focusUntil) - Date().timeIntervalSince1970) / 60) + 1
+            setPill(Pill(state: .quiet, title: L10n.t("Quiet for \(left) more min"),
+                         detail: L10n.t("\(working.count) working · Click to resume"), glyph: entry.glyph,
+                         since: Date(), processID: nil, others: []),
+                    watching: nil)
         } else if isFocused {
             setPill(nil, watching: nil)
         } else if let entry = working.first {
@@ -337,6 +389,10 @@ final class SessionPillFeed: ObservableObject {
         if pill.state == .notice {
             notice = nil
             rebuild()
+            return
+        }
+        if pill.state == .quiet {
+            setFocus(minutes: 0)
             return
         }
         let bundle = pill.glyph == .claude ? "com.anthropic.claudefordesktop" : "com.openai.codex"
@@ -616,6 +672,11 @@ struct SessionPillView: View {
                         pop = false
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.55)) { pop = true }
                     }
+            case .quiet:
+                Circle().fill(Palette.barTrack)
+                Image(systemName: "moon.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(secondaryInk)
             case .notice:
                 Circle().fill(Self.waitColor.opacity(0.18))
                 Image(systemName: "gauge.with.dots.needle.67percent")

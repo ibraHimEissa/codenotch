@@ -165,16 +165,17 @@ final class CursorGeometry {
     }
 
     /// Where the session popup takes the mouse, and nowhere else around it.
-    var sessionPillRect: CGRect? {
-        let feed = SessionPillFeed.shared
-        guard model.showsSessionPill, feed.pill != nil else { return nil }
-        let length = feed.length(on: model.edge)
-        return placement.rect(
-            along: cellWing.lead + cellWing.length / 2 - length / 2,
-            across: model.sessionPillInset,
-            length: length,
-            depth: feed.depth(on: model.edge)
-        )
+    var sessionPillRects: [CGRect] {
+        guard model.showsSessionPill else { return [] }
+        return SessionPillFeed.stack(on: model.edge, middle: cellWing.lead + cellWing.length / 2).map { item in
+            let length = item.feed.length(on: model.edge)
+            return placement.rect(
+                along: item.centre - length / 2,
+                across: model.sessionPillInset,
+                length: length,
+                depth: item.feed.depth(on: model.edge)
+            )
+        }
     }
 
     func resetCardRect(event: UsageResetEvent) -> CGRect? {

@@ -1263,7 +1263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func announceCompletions(sessions: [String: [AgentSession]]) {
         let events = completions.absorb(sessions)
-        let pill = SessionPillFeed.shared.absorb(sessions: sessions, events: events)
+        let pill = SessionPillFeed.absorbAll(sessions: sessions, events: events)
         guard let event = events.first, let preferences, let fleet = notchFleet else { return }
         Log.usage.info("session \(event.session.name, privacy: .public) \(String(describing: event.reason), privacy: .public)")
 

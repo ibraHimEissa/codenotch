@@ -153,13 +153,16 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
     }
 
     private let storeCache = CodexStoreCache()
+    private let changeStats = CodexChangeStats()
 
     /// When each row entered the state it is in, by session id. See `settled`.
     private var entered: [String: (state: AgentSession.State, at: Date)] = [:]
 
     private func rescan() {
+        let stats = changeStats
         let read = Self.read(stateStore: stateStore, desktopStore: desktopStore,
-                             staleAfter: staleAfter, profile: profile, cache: storeCache)
+                             staleAfter: staleAfter, profile: profile, cache: storeCache,
+                             changes: { stats.summary(for: $0) })
         let found = Self.settled(read, entered: &entered)
         guard found != sessions else { return }
         // Only on a change, as the Claude monitor does, and for the same
@@ -182,7 +185,8 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
                      staleAfter: TimeInterval, now: Date = Date(),
                      profile: CodexProfile = .default(),
                      cache: CodexStoreCache = CodexStoreCache(),
-                     openRollouts: Set<String>? = nil) -> [AgentSession] {
+                     openRollouts: Set<String>? = nil,
+                     changes: (String) -> String? = { _ in nil }) -> [AgentSession] {
         var found: [AgentSession] = []
         // Every thread id that is part of a conversation drawn below, so the
         // desktop app's copy of the same conversation is not drawn again.
@@ -201,12 +205,18 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
             // The id the single row always had, so a conversation that is not
             // a sub-agent's keeps it and nothing keyed on it moves.
             let handle = root.rollout?.lastPathComponent ?? root.id
-            guard let session = session(id: "\(profile.id).\(handle)",
+            guard var session = session(id: "\(profile.id).\(handle)",
                                         name: root.label(fallback: profile.displayName),
                                         modified: conversation.at, state: conversation.state,
                                         staleAfter: staleAfter, now: now,
                                         allowStale: conversation.isOpen)
             else { continue }
+            if let cwd = root.cwd, !cwd.isEmpty, let summary = changes(cwd) {
+                session = AgentSession(id: session.id, name: session.name,
+                                       detail: "\(session.detail) · \(summary)",
+                                       state: session.state, waitingFor: session.waitingFor,
+                                       since: session.since, processID: session.processID)
+            }
             found.append(session)
             drawn.formUnion(conversation.members)
         }
@@ -273,7 +283,12 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
             else { continue }
             let activity = cache.rolloutState(of: rollout, keeping: rollouts)
             let isRecent = now.timeIntervalSince(modified) <= staleAfter
-            guard isRecent || (openRollouts.contains(rollout.path) && activity == .busy)
+            // `nil` means no lifecycle event in the tail that was read — on a
+            // rollout of many megabytes, `task_started` is simply further back.
+            // That is a turn in progress, not a finished one; only
+            // `task_complete` is evidence the work stopped.
+            let unfinished = activity != .success
+            guard isRecent || (openRollouts.contains(rollout.path) && unfinished)
             else { continue }
             let root = root(of: thread)
             // A helper whose conversation cannot be found is not drawn at all.
@@ -283,8 +298,9 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
             guard !root.isHelper else { continue }
             roots[root.key] = root
             members[root.key, default: []].formUnion([thread.id, root.id].filter { !$0.isEmpty })
-            if activity == .busy || thread.key != root.key { busyRoots.insert(root.key) }
-            if openRollouts.contains(rollout.path), activity == .busy {
+            if activity == .busy || thread.key != root.key
+                || (openRollouts.contains(rollout.path) && unfinished) { busyRoots.insert(root.key) }
+            if openRollouts.contains(rollout.path), unfinished {
                 openRoots.insert(root.key)
             }
             if newest[root.key].map({ $0 < modified }) ?? true { newest[root.key] = modified }
@@ -439,5 +455,85 @@ enum CodexOpenRollouts {
                 String(cString: $0) == "codex"
             }
         }
+    }
+}
+
+
+/// "4 files · +612 −191": what a Codex conversation has changed so far in the
+/// folder it runs in, so the notch says how far along the work is rather than
+/// only that it is happening.
+///
+/// It is the working copy's uncommitted change against `HEAD` (staged,
+/// unstaged and new files), which is the conversation's own work whenever the
+/// folder was clean when it started. `git` runs on a background queue and the
+/// answer is cached for a few seconds per folder, so the two-second rescan on
+/// the main actor never waits on it; a folder that is not a repository simply
+/// shows nothing extra.
+@MainActor
+final class CodexChangeStats {
+    private var cache: [String: (at: Date, text: String?)] = [:]
+    private var inFlight: Set<String> = []
+    private let queue = DispatchQueue(label: "codenotch.codex-changes", qos: .utility)
+    private let freshFor: TimeInterval
+
+    init(freshFor: TimeInterval = 4) { self.freshFor = freshFor }
+
+    func summary(for cwd: String) -> String? {
+        let cached = cache[cwd]
+        if let cached, Date().timeIntervalSince(cached.at) < freshFor { return cached.text }
+        if !inFlight.contains(cwd) {
+            inFlight.insert(cwd)
+            queue.async { [weak self] in
+                let text = Self.compute(in: cwd)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self?.cache[cwd] = (Date(), text)
+                        self?.inFlight.remove(cwd)
+                    }
+                }
+            }
+        }
+        return cached?.text
+    }
+
+    nonisolated static func compute(in cwd: String) -> String? {
+        guard let numstat = git(["diff", "--numstat", "HEAD"], in: cwd) else { return nil }
+        var files = 0, added = 0, removed = 0
+        for line in numstat.split(separator: "\n") {
+            let parts = line.split(separator: "\t", maxSplits: 2)
+            guard parts.count == 3 else { continue }
+            files += 1
+            added += Int(parts[0]) ?? 0   // "-" for binary files
+            removed += Int(parts[1]) ?? 0
+        }
+        if let untracked = git(["ls-files", "--others", "--exclude-standard"], in: cwd) {
+            for path in untracked.split(separator: "\n").prefix(300) {
+                files += 1
+                let url = URL(fileURLWithPath: cwd).appendingPathComponent(String(path))
+                if let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count < 4_000_000 {
+                    added += data.reduce(0) { $1 == UInt8(ascii: "\n") ? $0 + 1 : $0 }
+                }
+            }
+        }
+        return format(files: files, added: added, removed: removed)
+    }
+
+    nonisolated static func format(files: Int, added: Int, removed: Int) -> String? {
+        guard files > 0 else { return nil }
+        return "\(files) \(files == 1 ? "file" : "files") +\(added) −\(removed)"
+    }
+
+    private nonisolated static func git(_ args: [String], in cwd: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", cwd, "--no-optional-locks"] + args
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }

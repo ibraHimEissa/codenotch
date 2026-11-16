@@ -3,6 +3,7 @@ import SwiftUI
 struct NotchRootView: View {
     @ObservedObject var model: NotchViewModel
     @ObservedObject private var sessionPill = SessionPillFeed.shared
+    @ObservedObject private var codexPill = SessionPillFeed.codex
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.codenotchReduceTransparency) private var reduceTransparency
     @Environment(\.codenotchHeadlessGlass) private var headlessGlass
@@ -125,14 +126,16 @@ struct NotchRootView: View {
                         .position(orbCentre(place))
                 }
 
-                if model.showsSessionPill, sessionPill.pill != nil {
-                    SessionPillView(feed: sessionPill)
-                        .position(place.point(along: model.notchMiddleAlong,
-                                              across: model.sessionPillInset + sessionPill.depth(on: model.edge) / 2))
-                        .transition(.opacity.combined(with: .offset(
-                            x: model.edge.outward.x * Design.px(36),
-                            y: model.edge.outward.y * Design.px(36)
-                        )))
+                if model.showsSessionPill {
+                    ForEach(SessionPillFeed.stack(on: model.edge, middle: model.notchMiddleAlong), id: \.feed.lane) { item in
+                        SessionPillView(feed: item.feed)
+                            .position(place.point(along: item.centre,
+                                                  across: model.sessionPillInset + item.feed.depth(on: model.edge) / 2))
+                            .transition(.opacity.combined(with: .offset(
+                                x: model.edge.outward.x * Design.px(36),
+                                y: model.edge.outward.y * Design.px(36)
+                            )))
+                    }
                 }
 
                 if let prompt = model.updatePrompt, model.isExpanded {
@@ -209,6 +212,8 @@ struct NotchRootView: View {
         .animation(motion(NotchMotion.unfold), value: model.isExpanded)
         .animation(motion(NotchMotion.contents), value: sessionPill.pill?.state)
         .animation(motion(NotchMotion.contents), value: sessionPill.pill == nil)
+        .animation(motion(NotchMotion.contents), value: codexPill.pill?.state)
+        .animation(motion(NotchMotion.contents), value: codexPill.pill == nil)
         .tint(model.accentColor.color)
         .environment(\.codenotchAccentColor, model.accentColor.color)
         // The drawn style, not the chosen one: on the top edge the dock style
