@@ -322,7 +322,8 @@ final class CodexActivityMonitor: ObservableObject, AgentActivityMonitor {
             next[session.id] = (session.state, at)
             return AgentSession(id: session.id, name: session.name, detail: session.detail,
                                 state: session.state, waitingFor: session.waitingFor,
-                                since: at, processID: session.processID)
+                                since: at, processID: session.processID,
+                                workingDirectory: session.workingDirectory)
         }
         entered = next
         return settled.sorted { $0.since == $1.since ? $0.id < $1.id : $0.since > $1.since }

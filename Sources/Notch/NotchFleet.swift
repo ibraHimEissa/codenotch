@@ -51,6 +51,17 @@ final class NotchFleet {
     /// already has its own `assignedScreen`, which wins over this in
     /// `NotchWindowController.currentScreen()`.
     private var displayPreference: DisplayPreference = .followActiveWindow
+    /// The display the single notch has been carried to under
+    /// `.followActiveWindow`: wherever the pointer last crossed into, or the
+    /// screen of the app that last took focus. Without it the one controller
+    /// kept the screen it was first assigned, and "follow" only ever moved on
+    /// a display being plugged in or out.
+    private var followedScreen: NSScreen?
+    /// The screen the pointer was on at the last poll, so a move is acted on
+    /// once — as the pointer crosses — rather than pulling the notch back
+    /// every tick after focus has carried it elsewhere.
+    private var lastPointerScreen: NSScreen?
+    private var followTimer: Timer?
     private var resetTimeFormat: ResetTimeFormat = .automatic
     private var accentColor: AccentColorChoice = .system
     private var watchLimit: Double = 0.50
@@ -155,9 +166,12 @@ final class NotchFleet {
             }
         }
         .store(in: &cancellables)
+        startFollowing()
     }
 
     func stop() {
+        followTimer?.invalidate()
+        followTimer = nil
         cancellables.removeAll()
         for id in controllers.keys {
             controllers[id]?.retire()
@@ -481,11 +495,83 @@ final class NotchFleet {
         reconcile(screens: screens)
     }
 
+    // MARK: - Following across displays
+
+    /// Carries the single notch to whichever display is in use. Two signals,
+    /// each acted on only when it changes: the pointer crossing onto another
+    /// display, and an app taking focus on one (`NSScreen.main` is the screen
+    /// of the key window). A poll rather than a mouse monitor because the
+    /// controllers already poll the pointer at this rate, and a monitor would
+    /// fire on every pixel of movement just to compare two screens.
+    private func startFollowing() {
+        lastPointerScreen = Self.screen(containing: NSEvent.mouseLocation)
+        let poll = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMayHaveCrossed() }
+        }
+        RunLoop.main.add(poll, forMode: .common)
+        followTimer = poll
+
+        NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didActivateApplicationNotification
+        )
+        // The key window is ordered front a beat after the activation lands.
+        .delay(for: .milliseconds(150), scheduler: RunLoop.main)
+        .sink { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let screen = NSScreen.main else { return }
+                self?.follow(to: screen)
+            }
+        }
+        .store(in: &cancellables)
+    }
+
+    private func pointerMayHaveCrossed() {
+        guard let screen = Self.screen(containing: NSEvent.mouseLocation) else { return }
+        defer { lastPointerScreen = screen }
+        guard screen !== lastPointerScreen else { return }
+        follow(to: screen)
+    }
+
+    private func follow(to screen: NSScreen) {
+        guard hasShown, scope == .mainDisplay,
+              displayPreference == .followActiveWindow,
+              NSScreen.screens.count > 1,
+              NSScreen.screens.contains(where: { $0 === screen })
+        else { return }
+        // Never pull the notch out from under the pointer: not while it is
+        // open, and not mid-drag (an ⌥-drag along the edge, or a window being
+        // dragged to the other display, which moves it once the drag ends).
+        guard NSEvent.pressedMouseButtons == 0,
+              !controllers.values.contains(where: { $0.model.isExpanded })
+        else { return }
+        if let current = controllers.values.first?.assignedScreen, current === screen {
+            followedScreen = screen
+            return
+        }
+        followedScreen = screen
+        reconcile(screens: NSScreen.screens)
+    }
+
+    private static func screen(containing point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) }
+    }
+
+    /// The display a single notch belongs on: a pinned display when one is
+    /// chosen and connected, otherwise the one it has been carried to.
+    private func singleScreen(in screens: [NSScreen]) -> NSScreen? {
+        if displayPreference == .followActiveWindow,
+           let followed = followedScreen,
+           screens.contains(where: { $0 === followed }) {
+            return followed
+        }
+        return NotchGeometry.preferredScreen(from: screens, preference: displayPreference)
+    }
+
     private func reconcile(screens: [NSScreen]) {
         let desired: [NSScreen]
         switch scope {
         case .mainDisplay:
-            desired = NotchGeometry.preferredScreen(from: screens, preference: displayPreference).map { [$0] } ?? []
+            desired = singleScreen(in: screens).map { [$0] } ?? []
         case .allDisplays:
             desired = screens
         }
@@ -497,7 +583,7 @@ final class NotchFleet {
                 controllers[id]?.retire()
             }
             controllers.removeAll()
-            if let main = NotchGeometry.preferredScreen(from: screens, preference: displayPreference) {
+            if let main = singleScreen(in: screens) {
                 controllers[Self.key(for: main)] = makeController(on: main)
             }
             return

@@ -1133,6 +1133,11 @@ private struct SessionRow: View {
     var onFocus: ((pid_t) -> Void)? = nil
     @Environment(\.codenotchAccentColor) private var accentColor
     @Environment(\.tooltipSecondaryInk) private var secondaryInk
+    @ObservedObject private var diffStore = DiffStatsStore.shared
+
+    private var diff: DiffStats? {
+        session.workingDirectory.flatMap { diffStore.stats[$0] }
+    }
 
     private var stateColor: Color {
         switch session.state {
@@ -1166,12 +1171,29 @@ private struct SessionRow: View {
                      trailingColor: stateColor) {
                 StatusRing(state: session.state, color: stateColor)
             }
-            SplitRow(
-                leading: detail,
-                trailing: ElapsedCopy.text(since: session.since, now: now),
-                leadingColor: secondaryInk
-            )
+            // Same shape as a `SplitRow`, with the diff counts written in
+            // ahead of the elapsed time. They ride on this line rather than a
+            // third one because the card's height is solved in AppKit from
+            // two lines a session; the folder name gives way first.
+            HStack(spacing: NotchLayout.splitRowGap) {
+                Text(detail).foregroundStyle(secondaryInk)
+                Spacer(minLength: 0)
+                HStack(spacing: NotchLayout.statusDotGap) {
+                    if let diff, !diff.isEmpty { DiffStatsText(stats: diff) }
+                    Text(ElapsedCopy.text(since: session.since, now: now))
+                        .foregroundStyle(secondaryInk)
+                }
+                .layoutPriority(1)
+            }
+            .font(Typography.cardBody)
+            .lineLimit(1)
             .padding(.top, NotchLayout.sessionRowGap)
+        }
+        // Only while the row is on screen: git runs for the folders of the
+        // sessions someone is looking at, never for a folded notch.
+        .task(id: session.workingDirectory) {
+            guard let directory = session.workingDirectory else { return }
+            await diffStore.watch(directory)
         }
         // Sessions that publish a pid can be jumped to; the rest are text,
         // and a gesture on them would promise something it cannot do.
@@ -1180,6 +1202,25 @@ private struct SessionRow: View {
             guard let pid = session.processID else { return }
             onFocus?(pid)
         }
+    }
+}
+
+/// "3 files +120 −14": how much a session has changed in its folder, the
+/// additions green and the removals red, as a code review prints them.
+private struct DiffStatsText: View {
+    let stats: DiffStats
+    @Environment(\.tooltipSecondaryInk) private var secondaryInk
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(stats.files == 1 ? L10n.t("1 file") : L10n.t("\(stats.files) files"))
+                .foregroundStyle(secondaryInk)
+            Text("+\(stats.added)").foregroundStyle(Palette.ample)
+            Text("\u{2212}\(stats.removed)").foregroundStyle(Palette.critical)
+        }
+        .monospacedDigit()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.t("\(stats.files) files changed, \(stats.added) lines added, \(stats.removed) removed"))
     }
 }
 

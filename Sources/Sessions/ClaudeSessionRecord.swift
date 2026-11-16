@@ -99,7 +99,8 @@ struct ClaudeSessionRecord {
             // this is what holds still until it is.
             since: millis.map { Date(timeIntervalSince1970: $0 / 1000) }
                 ?? self.startedAt ?? Date(),
-            processID: pid
+            processID: pid,
+            workingDirectory: cwd
         )
     }
 
@@ -111,7 +112,8 @@ struct ClaudeSessionRecord {
     func session(state: AgentSession.State, since: Date) -> AgentSession {
         AgentSession(id: session.id, name: session.name, detail: session.detail,
                      state: state, waitingFor: nil, since: since,
-                     processID: session.processID)
+                     processID: session.processID,
+                     workingDirectory: session.workingDirectory)
     }
 
     static func surface(_ entrypoint: String?) -> String {

@@ -568,8 +568,8 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(Preferences(defaults: defaults).accentColor, .system)
     }
 
-    func testSurfaceStyleDefaultsToLiquidGlass() {
-        XCTAssertEqual(preferences().notchSurfaceStyle, .glass)
+    func testSurfaceStyleDefaultsToSolidBlack() {
+        XCTAssertEqual(preferences().notchSurfaceStyle, .solid)
     }
 
     func testSurfaceStyleSurvivesARestart() {
@@ -577,8 +577,8 @@ final class PreferencesTests: XCTestCase {
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
 
-        Preferences(defaults: defaults).notchSurfaceStyle = .solid
-        XCTAssertEqual(Preferences(defaults: defaults).notchSurfaceStyle, .solid)
+        Preferences(defaults: defaults).notchSurfaceStyle = .glass
+        XCTAssertEqual(Preferences(defaults: defaults).notchSurfaceStyle, .glass)
     }
 
     func testDarkGlassSurvivesARestart() {
@@ -601,13 +601,13 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(Preferences(defaults: defaults).notchSurfaceStyle, .dock)
     }
 
-    func testAnUnknownSurfaceStyleFallsBackToLiquidGlass() {
+    func testAnUnknownSurfaceStyleFallsBackToSolidBlack() {
         let name = "PreferencesSurfaceStyleFallbackTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
         defaults.set("frosted", forKey: "notchSurfaceStyle")
 
-        XCTAssertEqual(Preferences(defaults: defaults).notchSurfaceStyle, .glass)
+        XCTAssertEqual(Preferences(defaults: defaults).notchSurfaceStyle, .solid)
     }
 
     /// The key is deliberately unchanged across the rename, so choices made

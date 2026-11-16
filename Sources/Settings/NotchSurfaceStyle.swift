@@ -3,9 +3,10 @@ import SwiftUI
 /// The material the expanded notch, tooltip and settings orb are painted with.
 ///
 /// Raw values are persistence keys, not display copy: keeping them stable lets
-/// labels change without losing an existing choice. The default is `.glass`
-/// because an "on by default" choice must not depend on the user having opened
-/// Settings.
+/// labels change without losing an existing choice. The default is `.solid`:
+/// the notch is meant to read as the black bezel out of the box, and the
+/// adaptive glass came out grey against a light desktop. Glass stays one
+/// choice away in Settings.
 enum NotchSurfaceStyle: String, CaseIterable, Identifiable {
     case glass
     case darkGlass
@@ -150,7 +151,7 @@ enum NotchSurfaceStyle: String, CaseIterable, Identifiable {
 }
 
 private struct NotchSurfaceStyleKey: EnvironmentKey {
-    static let defaultValue = NotchSurfaceStyle.glass
+    static let defaultValue = NotchSurfaceStyle.solid
 }
 
 /// The style the tooltip and the update and reset cards are painted with. The
@@ -159,7 +160,7 @@ private struct NotchSurfaceStyleKey: EnvironmentKey {
 /// Dark glass, but its clear glass over the 0.80 dim made the cards look
 /// unlike the same cards on every other edge, so they keep the dock recipe.
 private struct NotchCardSurfaceStyleKey: EnvironmentKey {
-    static let defaultValue = NotchSurfaceStyle.glass
+    static let defaultValue = NotchSurfaceStyle.solid
 }
 
 extension EnvironmentValues {

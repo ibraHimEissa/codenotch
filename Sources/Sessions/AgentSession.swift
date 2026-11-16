@@ -33,6 +33,9 @@ struct AgentSession: Identifiable, Equatable {
     /// rather than from a process, and a nil here costs nothing but the ability
     /// to jump to that session.
     let processID: pid_t?
+    /// The folder the agent is working in, when the tool says. Only used to
+    /// count what it has changed there so far — see `DiffStatsStore`.
+    let workingDirectory: String?
 
     /// Written out rather than synthesised so `processID` can default to nil:
     /// four of the five monitors have no pid to give, and a memberwise
@@ -44,7 +47,8 @@ struct AgentSession: Identifiable, Equatable {
         state: State,
         waitingFor: String?,
         since: Date,
-        processID: pid_t? = nil
+        processID: pid_t? = nil,
+        workingDirectory: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -53,5 +57,6 @@ struct AgentSession: Identifiable, Equatable {
         self.waitingFor = waitingFor
         self.since = since
         self.processID = processID
+        self.workingDirectory = workingDirectory
     }
 }

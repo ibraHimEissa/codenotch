@@ -1070,7 +1070,7 @@ final class Preferences: ObservableObject {
         self.accentColor = defaults.string(forKey: Keys.accentColor)
             .flatMap(AccentColorChoice.init(rawValue:)) ?? .system
         self.notchSurfaceStyle = defaults.string(forKey: Keys.notchSurfaceStyle)
-            .flatMap(NotchSurfaceStyle.init(rawValue:)) ?? .glass
+            .flatMap(NotchSurfaceStyle.init(rawValue:)) ?? .solid
         let storedWatchLimit = defaults.object(forKey: Keys.watchLimit) as? Double ?? 0.50
         let storedCriticalLimit = defaults.object(forKey: Keys.criticalLimit) as? Double ?? 0.70
         // `didSet` does the clamping, and it does not run for these assignments,
